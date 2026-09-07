@@ -1,0 +1,21 @@
+[Unit]
+Description=Notes Sync App
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/notes-sync-app/current
+Environment=NODE_ENV=production
+Environment=PORT=3006
+Environment=STATIC_ROOT=dist
+EnvironmentFile=/var/www/notes-sync-app/shared/.env.production
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
