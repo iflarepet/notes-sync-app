@@ -67,19 +67,20 @@ jobs:
       - name: Upload release
         run: |
           RELEASE="notes-sync-app-${GITHUB_SHA}"
-          ssh -p "$DEPLOY_PORT" "${DEPLOY_USER}@${DEPLOY_HOST}" "mkdir -p '${APP_PATH}/releases/${RELEASE}' '${APP_PATH}/shared'"
+          ssh -p "$DEPLOY_PORT" "${DEPLOY_USER}@${DEPLOY_HOST}" "set -eux
+            mkdir -p '${APP_PATH}/releases/${RELEASE}' '${APP_PATH}/shared'"
           scp -P "$DEPLOY_PORT" notes-sync-app-release.tgz "${DEPLOY_USER}@${DEPLOY_HOST}:${APP_PATH}/releases/${RELEASE}/release.tgz"
 
       - name: Activate release
         run: |
           RELEASE="notes-sync-app-${GITHUB_SHA}"
-          ssh -p "$DEPLOY_PORT" "${DEPLOY_USER}@${DEPLOY_HOST}" "set -e
+          ssh -p "$DEPLOY_PORT" "${DEPLOY_USER}@${DEPLOY_HOST}" "set -eux
             cd '${APP_PATH}/releases/${RELEASE}'
             tar -xzf release.tgz
             rm release.tgz
             test -f '${APP_PATH}/shared/.env.production'
             ln -sfn '${APP_PATH}/shared/.env.production' .env.production
-            ln -sfn '${APP_PATH}/releases/${RELEASE}' '${APP_PATH}/current'
+            ln -sTfn '${APP_PATH}/releases/${RELEASE}' '${APP_PATH}/current'
             sudo systemctl restart notes-sync-app
             sudo systemctl reload nginx
             ls -1dt '${APP_PATH}/releases'/* | tail -n +6 | xargs -r rm -rf"
