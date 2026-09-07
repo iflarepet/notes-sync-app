@@ -11,6 +11,7 @@ restarts a systemd service, reloads Nginx, and runs smoke tests.
 - Active release: `/var/www/notes-sync-app/current`
 - Releases: `/var/www/notes-sync-app/releases`
 - Shared env: `/var/www/notes-sync-app/shared/.env.production`
+- Shared notes: `/var/www/notes-sync-app/shared/data/notes.json`
 - App service: `notes-sync-app`
 - App port: `3006`
 - Default host: `notes.flare.pet`

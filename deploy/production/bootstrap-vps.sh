@@ -38,7 +38,7 @@ printf '%s\n' "$SSH_PUBLIC_KEY" > "/home/$DEPLOY_USER/.ssh/authorized_keys"
 chown "$DEPLOY_USER:$DEPLOY_USER" "/home/$DEPLOY_USER/.ssh/authorized_keys"
 chmod 0600 "/home/$DEPLOY_USER/.ssh/authorized_keys"
 
-install -d -m 0755 "$APP_PATH/releases" "$APP_PATH/shared"
+install -d -m 0755 "$APP_PATH/releases" "$APP_PATH/shared" "$APP_PATH/shared/data"
 chown -R "$DEPLOY_USER:www-data" "$APP_PATH"
 chmod -R g+rwX "$APP_PATH"
 
@@ -63,6 +63,7 @@ WorkingDirectory=$APP_PATH/current
 Environment=NODE_ENV=production
 Environment=PORT=$APP_PORT
 Environment=STATIC_ROOT=dist
+Environment=NOTES_FILE=$APP_PATH/shared/data/notes.json
 EnvironmentFile=$APP_PATH/shared/.env.production
 ExecStart=/usr/bin/node server.js
 Restart=always

@@ -68,7 +68,7 @@ jobs:
         run: |
           RELEASE="notes-sync-app-${GITHUB_SHA}"
           ssh -p "$DEPLOY_PORT" "${DEPLOY_USER}@${DEPLOY_HOST}" "set -eux
-            mkdir -p '${APP_PATH}/releases/${RELEASE}' '${APP_PATH}/shared'"
+            mkdir -p '${APP_PATH}/releases/${RELEASE}' '${APP_PATH}/shared/data'"
           scp -P "$DEPLOY_PORT" notes-sync-app-release.tgz "${DEPLOY_USER}@${DEPLOY_HOST}:${APP_PATH}/releases/${RELEASE}/release.tgz"
 
       - name: Activate release
@@ -80,6 +80,7 @@ jobs:
             rm release.tgz
             test -f '${APP_PATH}/shared/.env.production'
             ln -sfn '${APP_PATH}/shared/.env.production' .env.production
+            ln -sfn '${APP_PATH}/shared/data' data
             ln -sTfn '${APP_PATH}/releases/${RELEASE}' '${APP_PATH}/current'
             sudo systemctl restart notes-sync-app
             sudo systemctl reload nginx

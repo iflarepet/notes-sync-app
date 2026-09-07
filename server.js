@@ -1,10 +1,17 @@
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { extname, join, normalize, resolve } from "node:path";
+import { dirname, extname, join, normalize, resolve } from "node:path";
+import { randomBytes } from "node:crypto";
 
 const port = Number(process.env.PORT || 3006);
+const host = process.env.HOST || "0.0.0.0";
 const root = resolve(process.env.STATIC_ROOT || "dist");
+const notesFile = resolve(process.env.NOTES_FILE || "data/notes.json");
 const indexFile = join(root, "index.html");
+const maxNoteBytes = 1024 * 1024;
+const codePattern = /^[A-HJ-NP-Z2-9]{8}$/;
+const codeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const subscribers = new Map();
 
 const contentTypes = new Map([
   [".css", "text/css; charset=utf-8"],
@@ -16,6 +23,41 @@ const contentTypes = new Map([
   [".svg", "image/svg+xml"],
   [".webp", "image/webp"],
 ]);
+
+function loadNotes() {
+  try {
+    return new Map(Object.entries(JSON.parse(readFileSync(notesFile, "utf8"))));
+  } catch (error) {
+    if (error.code !== "ENOENT") console.error(`Could not load ${notesFile}:`, error);
+    return new Map();
+  }
+}
+
+const notes = loadNotes();
+let persistTimer;
+
+function persistNotes() {
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    try {
+      mkdirSync(dirname(notesFile), { recursive: true });
+      const temporaryFile = `${notesFile}.tmp`;
+      writeFileSync(temporaryFile, JSON.stringify(Object.fromEntries(notes)), "utf8");
+      renameSync(temporaryFile, notesFile);
+    } catch (error) {
+      console.error("Could not persist notes:", error);
+    }
+  }, 100);
+}
+
+function sendJson(response, status, value) {
+  response.writeHead(status, {
+    "cache-control": "no-store",
+    "content-type": "application/json; charset=utf-8",
+    "x-content-type-options": "nosniff",
+  });
+  response.end(JSON.stringify(value));
+}
 
 function sendFile(response, filePath) {
   const contentType = contentTypes.get(extname(filePath)) || "application/octet-stream";
@@ -29,28 +71,123 @@ function sendFile(response, filePath) {
 function resolveRequestPath(url) {
   const pathname = decodeURIComponent(new URL(url || "/", "http://localhost").pathname);
   const candidate = normalize(join(root, pathname));
-
-  if (!candidate.startsWith(root)) {
-    return undefined;
-  }
-
-  if (existsSync(candidate) && statSync(candidate).isFile()) {
-    return candidate;
-  }
-
+  if (!candidate.startsWith(root)) return undefined;
+  if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
   return indexFile;
 }
 
-createServer((request, response) => {
-  const filePath = resolveRequestPath(request.url);
+function generateCode() {
+  let code;
+  do {
+    const bytes = randomBytes(8);
+    code = Array.from(bytes, (byte) => codeAlphabet[byte % codeAlphabet.length]).join("");
+  } while (notes.has(code));
+  return code;
+}
 
+function noteFor(code) {
+  return notes.get(code) || { content: "", revision: 0, updatedAt: null };
+}
+
+function broadcast(code, note) {
+  const message = `data: ${JSON.stringify(note)}\n\n`;
+  for (const response of subscribers.get(code) || []) response.write(message);
+}
+
+async function readJson(request) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > maxNoteBytes) throw new Error("PAYLOAD_TOO_LARGE");
+    chunks.push(chunk);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+}
+
+async function handleApi(request, response, pathname) {
+  if (request.method === "POST" && pathname === "/api/sessions") {
+    const code = generateCode();
+    notes.set(code, noteFor(code));
+    persistNotes();
+    sendJson(response, 201, { code, ...noteFor(code) });
+    return true;
+  }
+
+  const match = pathname.match(/^\/api\/notes\/([^/]+)(\/events)?$/);
+  if (!match) return false;
+  const code = decodeURIComponent(match[1]).toUpperCase();
+  if (!codePattern.test(code)) {
+    sendJson(response, 400, { error: "Invalid sync code" });
+    return true;
+  }
+
+  if (request.method === "GET" && match[2] === "/events") {
+    response.writeHead(200, {
+      "cache-control": "no-cache, no-transform",
+      "connection": "keep-alive",
+      "content-type": "text/event-stream; charset=utf-8",
+      "x-accel-buffering": "no",
+    });
+    response.write(`data: ${JSON.stringify(noteFor(code))}\n\n`);
+    const codeSubscribers = subscribers.get(code) || new Set();
+    codeSubscribers.add(response);
+    subscribers.set(code, codeSubscribers);
+    const keepAlive = setInterval(() => response.write(": keep-alive\n\n"), 20000);
+    request.on("close", () => {
+      clearInterval(keepAlive);
+      codeSubscribers.delete(response);
+      if (codeSubscribers.size === 0) subscribers.delete(code);
+    });
+    return true;
+  }
+
+  if (request.method === "GET" && !match[2]) {
+    sendJson(response, 200, noteFor(code));
+    return true;
+  }
+
+  if (request.method === "PUT" && !match[2]) {
+    try {
+      const body = await readJson(request);
+      if (typeof body.content !== "string") {
+        sendJson(response, 400, { error: "Content must be a string" });
+        return true;
+      }
+      const current = noteFor(code);
+      const note = {
+        content: body.content,
+        revision: current.revision + 1,
+        updatedAt: new Date().toISOString(),
+        clientId: typeof body.clientId === "string" ? body.clientId.slice(0, 100) : undefined,
+      };
+      notes.set(code, note);
+      persistNotes();
+      broadcast(code, note);
+      sendJson(response, 200, note);
+    } catch (error) {
+      sendJson(response, error.message === "PAYLOAD_TOO_LARGE" ? 413 : 400, {
+        error: error.message === "PAYLOAD_TOO_LARGE" ? "Note is too large" : "Invalid JSON",
+      });
+    }
+    return true;
+  }
+
+  sendJson(response, 405, { error: "Method not allowed" });
+  return true;
+}
+
+createServer(async (request, response) => {
+  const url = new URL(request.url || "/", "http://localhost");
+  if (await handleApi(request, response, url.pathname)) return;
+
+  const filePath = resolveRequestPath(request.url);
   if (!filePath || !existsSync(filePath)) {
     response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
     response.end("Not found");
     return;
   }
-
   sendFile(response, filePath);
-}).listen(port, "127.0.0.1", () => {
-  console.log(`notes-sync-app listening on http://127.0.0.1:${port}`);
+}).listen(port, host, () => {
+  console.log(`notes-sync-app listening on http://${host}:${port}`);
 });

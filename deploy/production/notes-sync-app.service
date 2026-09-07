@@ -10,6 +10,7 @@ WorkingDirectory=/var/www/notes-sync-app/current
 Environment=NODE_ENV=production
 Environment=PORT=3006
 Environment=STATIC_ROOT=dist
+Environment=NOTES_FILE=/var/www/notes-sync-app/shared/data/notes.json
 EnvironmentFile=/var/www/notes-sync-app/shared/.env.production
 ExecStart=/usr/bin/node server.js
 Restart=always

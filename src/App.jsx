@@ -2,73 +2,96 @@ import { useState, useEffect, useRef } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import './App.css'
 
+const syncCodePattern = /^[A-HJ-NP-Z2-9]{8}$/
+
+function getInitialSyncCode() {
+  const sharedCode = new URLSearchParams(window.location.search).get('code')?.toUpperCase()
+  if (sharedCode && syncCodePattern.test(sharedCode)) return sharedCode
+  const savedCode = localStorage.getItem('syncCode')
+  return savedCode && syncCodePattern.test(savedCode) ? savedCode : null
+}
+
 function App() {
-  const [syncCode, setSyncCode] = useState(() => {
-    return localStorage.getItem('syncCode') || null
-  })
+  const [syncCode, setSyncCode] = useState(getInitialSyncCode)
   const [inputCode, setInputCode] = useState('')
   const [notes, setNotes] = useState(() => {
-    const savedCode = localStorage.getItem('syncCode')
-    return savedCode ? localStorage.getItem(`notes_${savedCode}`) || '' : ''
+    const initialCode = getInitialSyncCode()
+    return initialCode ? localStorage.getItem(`notes_${initialCode}`) || '' : ''
   })
   const [showQR, setShowQR] = useState(false)
-  const [isAuthenticated, setIsAuthenticated] = useState(() => {
-    return Boolean(localStorage.getItem('syncCode'))
-  })
+  const [isAuthenticated, setIsAuthenticated] = useState(() => Boolean(getInitialSyncCode()))
   const [error, setError] = useState('')
-  
-  const channelRef = useRef(null)
+  const [syncStatus, setSyncStatus] = useState('Connecting…')
+  const [clientId] = useState(() => crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`)
+  const saveTimerRef = useRef(null)
+  const latestContentRef = useRef(notes)
+  const dirtyRef = useRef(false)
+  const pendingRemoteRef = useRef(null)
 
-  // Generate random 8-character alphanumeric code
-  const generateSyncCode = () => {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // Excluding confusing chars like O, 0, I, 1
-    let code = ''
-    for (let i = 0; i < 8; i++) {
-      code += chars.charAt(Math.floor(Math.random() * chars.length))
-    }
-    return code
-  }
-
-  // Initialize or join a sync session
   useEffect(() => {
     if (!syncCode) return
 
-    // Create BroadcastChannel with sync code
-    channelRef.current = new BroadcastChannel(`note-sync-${syncCode}`)
-    
-    // Listen for updates from other tabs with same sync code
-    channelRef.current.onmessage = (event) => {
-      if (event.data.type === 'NOTE_UPDATE' && event.data.syncCode === syncCode) {
-        setNotes(event.data.content)
-        localStorage.setItem(`notes_${syncCode}`, event.data.content)
+    dirtyRef.current = false
+    pendingRemoteRef.current = null
+    localStorage.setItem('syncCode', syncCode)
+    const events = new EventSource(`/api/notes/${encodeURIComponent(syncCode)}/events`)
+
+    events.onopen = () => setSyncStatus('Synced')
+    events.onerror = () => setSyncStatus('Reconnecting…')
+    events.onmessage = (event) => {
+      const update = JSON.parse(event.data)
+      if (update.clientId === clientId) return
+      if (dirtyRef.current) {
+        pendingRemoteRef.current = update
+      } else {
+        latestContentRef.current = update.content
+        setNotes(update.content)
+        localStorage.setItem(`notes_${syncCode}`, update.content)
       }
     }
 
     return () => {
-      channelRef.current?.close()
+      events.close()
+      clearTimeout(saveTimerRef.current)
     }
-  }, [syncCode])
+  }, [clientId, syncCode])
 
-  const handleCreateSession = () => {
-    const newCode = generateSyncCode()
-    setSyncCode(newCode)
-    setNotes('')
-    setIsAuthenticated(true)
-    localStorage.setItem('syncCode', newCode)
-    setError('')
+  const handleCreateSession = async () => {
+    try {
+      setError('')
+      const response = await fetch('/api/sessions', { method: 'POST' })
+      if (!response.ok) throw new Error('Could not create a session')
+      const session = await response.json()
+      latestContentRef.current = session.content
+      setSyncCode(session.code)
+      setNotes(session.content)
+      setIsAuthenticated(true)
+      localStorage.setItem('syncCode', session.code)
+    } catch {
+      setError('Cannot reach the sync server. Please try again.')
+    }
   }
 
-  const handleJoinSession = () => {
+  const handleJoinSession = async () => {
     const code = inputCode.trim().toUpperCase()
-    if (code.length !== 8) {
+    if (!syncCodePattern.test(code)) {
       setError('Sync code must be 8 characters')
       return
     }
-    setSyncCode(code)
-    setNotes(localStorage.getItem(`notes_${code}`) || '')
-    setIsAuthenticated(true)
-    localStorage.setItem('syncCode', code)
-    setError('')
+    try {
+      const response = await fetch(`/api/notes/${encodeURIComponent(code)}`)
+      if (!response.ok) throw new Error('Could not join the session')
+      const note = await response.json()
+      latestContentRef.current = note.content
+      setSyncCode(code)
+      setNotes(note.content)
+      setIsAuthenticated(true)
+      localStorage.setItem('syncCode', code)
+      localStorage.setItem(`notes_${code}`, note.content)
+      setError('')
+    } catch {
+      setError('Cannot reach the sync server. Please try again.')
+    }
   }
 
   const handleLogout = () => {
@@ -77,26 +100,42 @@ function App() {
       setSyncCode(null)
       setNotes('')
       localStorage.removeItem('syncCode')
-      if (channelRef.current) {
-        channelRef.current.close()
-      }
+      window.history.replaceState({}, '', window.location.pathname)
     }
   }
 
   const handleChange = (e) => {
     const newContent = e.target.value
     setNotes(newContent)
-    
-    // Save to localStorage with sync code
+    latestContentRef.current = newContent
+    dirtyRef.current = true
     localStorage.setItem(`notes_${syncCode}`, newContent)
-    
-    // Broadcast to other tabs with same sync code
-    channelRef.current?.postMessage({
-      type: 'NOTE_UPDATE',
-      content: newContent,
-      syncCode: syncCode,
-      timestamp: Date.now()
-    })
+    setSyncStatus('Saving…')
+    clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/notes/${encodeURIComponent(syncCode)}`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ content: newContent, clientId }),
+        })
+        if (!response.ok) throw new Error('Save failed')
+        const saved = await response.json()
+        if (latestContentRef.current === newContent) {
+          dirtyRef.current = false
+          const pendingRemote = pendingRemoteRef.current
+          pendingRemoteRef.current = null
+          if (pendingRemote && pendingRemote.revision > saved.revision) {
+            latestContentRef.current = pendingRemote.content
+            setNotes(pendingRemote.content)
+            localStorage.setItem(`notes_${syncCode}`, pendingRemote.content)
+          }
+          setSyncStatus('Synced')
+        }
+      } catch {
+        setSyncStatus('Save failed — keep this page open')
+      }
+    }, 250)
   }
 
   const copyToClipboard = () => {
@@ -104,22 +143,25 @@ function App() {
     alert('Sync code copied to clipboard!')
   }
 
-  // Login/Join screen
+  const shareUrl = syncCode
+    ? `${window.location.origin}${window.location.pathname}?code=${encodeURIComponent(syncCode)}`
+    : ''
+
   if (!isAuthenticated) {
     return (
       <div className="app">
         <div className="auth-container">
           <div className="auth-card">
-            <h1>🔐 Note Everywhere</h1>
-            <p className="auth-subtitle">Secure synchronized notes</p>
+            <h1>Note Everywhere</h1>
+            <p className="auth-subtitle">Shared notes across all your devices</p>
             
             <div className="auth-section">
               <h2>Create New Session</h2>
               <p className="auth-description">
-                Generate a unique 8-character code to start syncing your notes securely
+                Generate an 8-character code to start a note session
               </p>
               <button className="btn btn-primary" onClick={handleCreateSession}>
-                🎲 Generate Sync Code
+                Generate Code
               </button>
             </div>
 
@@ -143,7 +185,7 @@ function App() {
               />
               {error && <p className="error-message">{error}</p>}
               <button className="btn btn-secondary" onClick={handleJoinSession}>
-                🔓 Join Session
+                Join Session
               </button>
             </div>
           </div>
@@ -152,24 +194,24 @@ function App() {
     )
   }
 
-  // Main notes interface
   return (
     <div className="app">
       <header className="header">
         <div className="header-content">
           <div>
-            <h1>📝 Note Everywhere</h1>
+            <h1>Note Everywhere</h1>
             <p className="subtitle">Synced with code: <strong>{syncCode}</strong></p>
+            <p className="subtitle">{syncStatus}</p>
           </div>
           <div className="header-actions">
             <button className="btn btn-small" onClick={() => setShowQR(!showQR)}>
-              📱 {showQR ? 'Hide' : 'Show'} QR
+              {showQR ? 'Hide' : 'Show'} QR
             </button>
             <button className="btn btn-small" onClick={copyToClipboard}>
-              📋 Copy Code
+              Copy Code
             </button>
             <button className="btn btn-small btn-logout" onClick={handleLogout}>
-              🚪 Leave Session
+              Leave Session
             </button>
           </div>
         </div>
@@ -180,7 +222,7 @@ function App() {
           <div className="qr-card">
             <h3>Scan to Join Session</h3>
             <QRCodeSVG 
-              value={syncCode} 
+              value={shareUrl}
               size={200}
               level="H"
               includeMargin={true}
@@ -202,7 +244,7 @@ function App() {
       </main>
       
       <footer className="footer">
-        <p>🔒 Only users with your sync code can see and edit these notes</p>
+        <p>Only people with your code can open this note session</p>
       </footer>
     </div>
   )
