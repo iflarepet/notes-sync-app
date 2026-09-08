@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
+import QrScanner from './QrScanner'
 import './App.css'
 
 const syncCodePattern = /^[A-HJ-NP-Z2-9]{8}$/
@@ -11,6 +12,17 @@ function getInitialSyncCode() {
   return savedCode && syncCodePattern.test(savedCode) ? savedCode : null
 }
 
+function codeFromQrValue(value) {
+  const rawCode = value.trim().toUpperCase()
+  if (syncCodePattern.test(rawCode)) return rawCode
+  try {
+    const code = new URL(value, window.location.origin).searchParams.get('code')?.toUpperCase()
+    return code && syncCodePattern.test(code) ? code : null
+  } catch {
+    return null
+  }
+}
+
 function App() {
   const [syncCode, setSyncCode] = useState(getInitialSyncCode)
   const [inputCode, setInputCode] = useState('')
@@ -19,6 +31,7 @@ function App() {
     return initialCode ? localStorage.getItem(`notes_${initialCode}`) || '' : ''
   })
   const [showQR, setShowQR] = useState(false)
+  const [showScanner, setShowScanner] = useState(false)
   const [isAuthenticated, setIsAuthenticated] = useState(() => Boolean(getInitialSyncCode()))
   const [error, setError] = useState('')
   const [syncStatus, setSyncStatus] = useState('Connecting…')
@@ -72,8 +85,7 @@ function App() {
     }
   }
 
-  const handleJoinSession = async () => {
-    const code = inputCode.trim().toUpperCase()
+  const joinSession = async (code) => {
     if (!syncCodePattern.test(code)) {
       setError('Sync code must be 8 characters')
       return
@@ -92,6 +104,20 @@ function App() {
     } catch {
       setError('Cannot reach the sync server. Please try again.')
     }
+  }
+
+  const handleJoinSession = () => joinSession(inputCode.trim().toUpperCase())
+
+  const handleScannedValue = (value) => {
+    const code = codeFromQrValue(value)
+    if (!code) {
+      setError('That QR code does not contain a valid sync code.')
+      return false
+    }
+    setInputCode(code)
+    setShowScanner(false)
+    joinSession(code)
+    return true
   }
 
   const handleLogout = () => {
@@ -187,7 +213,16 @@ function App() {
               <button className="btn btn-secondary" onClick={handleJoinSession}>
                 Join Session
               </button>
+              <button className="btn btn-scan" onClick={() => setShowScanner(true)}>
+                Scan QR Code
+              </button>
             </div>
+            {showScanner && (
+              <QrScanner
+                onClose={() => setShowScanner(false)}
+                onScan={handleScannedValue}
+              />
+            )}
           </div>
         </div>
       </div>

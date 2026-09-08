@@ -7,6 +7,7 @@ A React app that syncs notes in real time between browsers and devices using an 
 - 🔐 **Secure sessions** - Generate or join with an 8-character sync code
 - ✨ **Real-time sync** - Type on one device and see it immediately on every device using the same code
 - 📱 **QR code sharing** - Share sync codes easily via QR code
+- 📷 **QR scanner** - Join a note by scanning its QR code with the device camera
 - 💾 **Auto-save** - Notes are automatically saved per sync code
 - 🚀 **Fast & lightweight** - Built with React + Vite
 - 📱 **Responsive** - Works on desktop and mobile
